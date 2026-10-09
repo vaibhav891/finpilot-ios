@@ -1,0 +1,33 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+project.xcworkspace/xcuserdata/
+*.xcuserdatad/
+*.moved-aside
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+Packages/
+
+# Node & Firebase
+node_modules/
+backend/functions/node_modules/
+*.log
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
+
+# Environment secrets
+.env
+.env.local
+backend/functions/.env
+backend/functions/.runtimeconfig.json
+
+# macOS
+.DS_Store
+*.swp
+*~

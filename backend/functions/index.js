@@ -2,20 +2,24 @@
  * FinPilot - AI Personal Finance Coach
  * Firebase Cloud Functions Backend
  *
- * Implements secure boundary for OpenAI API calls, context assembly,
+ * Implements secure boundary for Google Gemini API calls, context assembly,
  * response schema validation, and push notification triggers.
  */
 
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
-const { OpenAI } = require("openai");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 admin.initializeApp();
 
-// Initialize OpenAI client using environment secret
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || functions.config().openai?.key || "sk-placeholder",
-});
+// Initialize Gemini client using environment secret
+const geminiApiKey =
+  process.env.GEMINI_API_KEY ||
+  functions.config().gemini?.key ||
+  process.env.GOOGLE_API_KEY ||
+  "placeholder-key";
+
+const genAI = new GoogleGenerativeAI(geminiApiKey);
 
 const FINPILOT_SYSTEM_PROMPT = `
 You are FinPilot, an expert AI Personal Finance Coach.
@@ -24,13 +28,13 @@ Your goal is to provide concise, empathetic, highly actionable, and math-accurat
 Core Guidelines:
 1. Always analyze income vs expenses, savings rate, and category budgets.
 2. If spending in discretionary categories (Dining, Shopping, Entertainment) is high or rising, point it out gently with constructive micro-habit changes.
-3. Be specific with numbers (e.g. quote currency amounts and percentages).
+3. Be specific with numbers (quote currency amounts and percentages).
 4. Default to INR (₹) unless another currency is specified.
 5. Provide a concise, clear markdown reply in "replyText".
 6. When your reply identifies a notable pattern, opportunity to save, or budget warning, provide a structured insight object in "structuredInsight".
 7. Always uphold the financial disclaimer: you provide informational insights and not certified tax, legal, or investment advice.
 
-JSON Response Schema:
+You MUST respond strictly with a valid JSON object following this exact schema:
 {
   "replyText": "Markdown formatted conversational response to the user.",
   "structuredInsight": {
@@ -43,6 +47,7 @@ JSON Response Schema:
     "impactAmount": 1500.0 or null
   }
 }
+If no specific structured insight applies, set "structuredInsight" to null.
 `;
 
 /**
@@ -117,41 +122,61 @@ ${(financialContext?.recentTransactions || [])
   .join("\n")}
 `;
 
-    // 3. Assemble Conversation Messages
-    const openAiMessages = [
-      { role: "system", content: FINPILOT_SYSTEM_PROMPT },
-      { role: "system", content: `CURRENT USER FINANCIAL CONTEXT:\n${contextSummary}` },
+    // 3. Assemble Gemini Contents
+    const contents = [
+      {
+        role: "user",
+        parts: [{ text: `FINANCIAL CONTEXT:\n${contextSummary}` }],
+      },
+      {
+        role: "model",
+        parts: [
+          {
+            text: JSON.stringify({
+              replyText:
+                "Understood. I have loaded your financial context and will provide personalized insights based on your spending and budget targets.",
+              structuredInsight: null,
+            }),
+          },
+        ],
+      },
     ];
 
     if (Array.isArray(history)) {
       history.slice(-6).forEach((msg) => {
-        openAiMessages.push({
-          role: msg.role === "user" ? "user" : "assistant",
-          content: msg.content,
+        contents.push({
+          role: msg.role === "user" ? "user" : "model",
+          parts: [{ text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content) }],
         });
       });
     }
 
-    openAiMessages.push({ role: "user", content: userPrompt });
-
-    // 4. Call OpenAI API with JSON Object Mode
-    const completion = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-      messages: openAiMessages,
-      response_format: { type: "json_object" },
-      temperature: 0.7,
-      max_tokens: 800,
+    contents.push({
+      role: "user",
+      parts: [{ text: userPrompt }],
     });
 
-    const responseContent = completion.choices[0].message.content;
-    const parsedPayload = JSON.parse(responseContent);
+    // 4. Configure Gemini Model with JSON output
+    const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+    const model = genAI.getGenerativeModel({
+      model: modelName,
+      systemInstruction: FINPILOT_SYSTEM_PROMPT,
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.7,
+      },
+    });
+
+    const result = await model.generateContent({ contents });
+    const responseText = result.response.text();
+    const parsedPayload = JSON.parse(responseText);
 
     // 5. Log Analytics Event (Anonymized)
-    console.log(`[AICoach] User ${userId} queried coach. Tokens used: ${completion.usage?.total_tokens}`);
+    console.log(`[AICoach] User ${userId} queried coach using ${modelName}.`);
 
     res.status(200).json(parsedPayload);
   } catch (error) {
-    console.error("Error executing askAICoach:", error);
+    console.error("Error executing askAICoach with Gemini:", error);
     res.status(500).json({
       error: "Internal Coach Service Error",
       details: error.message,
@@ -236,7 +261,6 @@ exports.scheduledMonthlySpendingReport = functions.pubsub
   .timeZone("Asia/Kolkata")
   .onRun(async () => {
     console.log("[Cron] Running monthly spending report dispatcher");
-    // Broadcast notification to active users
     const payload = {
       topic: "monthly_reports",
       notification: {

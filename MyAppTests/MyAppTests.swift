@@ -7,7 +7,7 @@
 
 import Testing
 import Foundation
-@testable import MyApp
+@testable import finpilot_ios
 
 struct FinPilotCoreTests {
 
